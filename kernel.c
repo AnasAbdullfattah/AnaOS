@@ -26,12 +26,7 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
     return (struct sbiret){.error = a0, .value = a1};
 }
 
-void *memset(void *buf, int c, size_t n) {
-    uint8_t *p = (uint8_t *) buf;
-    while (n--)
-        *p++ = (uint8_t) c;
-    return buf;
-}
+
 
 void putchar(char ch) {
     sbi_call(ch, 0, 0, 0, 0, 0, 0, 1);
