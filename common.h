@@ -8,7 +8,7 @@ typedef unsigned long long uint64_t;
 typedef uint32_t size_t;
 typedef uint32_t paddr_t;
 typedef uint32_t vaddr_t;
-
+#define PAGE_SIZE 4096
 #define true  1
 #define false 0
 #define NULL  ((void *) 0)
@@ -35,4 +35,4 @@ void printf(const char *fmt, ...);
     do { \
         printf("PANIC: %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
         while (1) {} \
-    } while (0)
+    } while (0)
