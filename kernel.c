@@ -4,6 +4,7 @@
 typedef unsigned char uint8_t;
 typedef unsigned int uint32_t;
 typedef uint32_t size_t;
+extern char __kernel_base[];
 
 extern char __bss[], __bss_end[], __stack_top[];
 
@@ -29,30 +30,46 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
 struct process *current_proc;
 struct process *idle_proc;   
 extern struct process procs[PROCS_MAX];
+
 void switch_context(uint32_t *prev_sp, uint32_t *next_sp);
+void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags);
 
 void yield(void) {
+    struct process *prev = current_proc;
+    struct process *next = NULL;
 
-    struct process *next = idle_proc;
-    for (int i = 0; i < PROCS_MAX; i++) {
-        struct process *proc = &procs[(current_proc->pid + i) % PROCS_MAX];
-        if (proc->state == PROC_RUNNABLE && proc->pid > 0) {
-            next = proc;
+    int start_idx = (prev - procs);
+    for (int i = 1; i < PROCS_MAX; i++) {
+        int idx = (start_idx + i) % PROCS_MAX;
+        if (procs[idx].state == PROC_RUNNABLE && &procs[idx] != idle_proc) {
+            next = &procs[idx];
             break;
         }
     }
 
-    if (next == current_proc)
+    if (next == NULL) {
+        if (prev != idle_proc) {
+            next = idle_proc;
+        } else {
+            return;
+        }
+    }
+
+    if (next == prev)
         return;
 
+    current_proc = next;
 
     __asm__ __volatile__(
+        "sfence.vma\n"
+        "csrw satp, %[satp]\n"
+        "sfence.vma\n"
         "csrw sscratch, %[sscratch]\n"
         :
-        : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
+        : [satp] "r" (SATP_SV32 | ((uint32_t) next->page_table / PAGE_SIZE)),
+          [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
     );
-    struct process *prev = current_proc;
-    current_proc = next;
+
     switch_context(&prev->sp, &next->sp);
 }
 
@@ -241,9 +258,17 @@ struct process *create_process(uint32_t pc) {
     *--sp = 0;                      
     *--sp = 0;                      
     *--sp = (uint32_t) pc;          
+
+    // Map kernel pages.
+    uint32_t *page_table = (uint32_t *) alloc_pages(1);
+    for (paddr_t paddr = (paddr_t) __kernel_base;
+         paddr < (paddr_t) __free_ram_end; paddr += PAGE_SIZE)
+        map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+
     proc->pid = i + 1;
     proc->state = PROC_RUNNABLE;
     proc->sp = (uint32_t) sp;
+    proc->page_table = page_table;
     return proc;
 }
 void delay(void) {
@@ -271,6 +296,23 @@ void proc_b_entry(void) {
     }
 }
 
+void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
+    if (!is_aligned(vaddr, PAGE_SIZE))
+        PANIC("unaligned vaddr %x", vaddr);
+
+    if (!is_aligned(paddr, PAGE_SIZE))
+        PANIC("unaligned paddr %x", paddr);
+
+    uint32_t vpn1 = (vaddr >> 22) & 0x3ff;
+    if ((table1[vpn1] & PAGE_V) == 0) {
+        uint32_t pt_paddr = alloc_pages(1);
+        table1[vpn1] = ((pt_paddr / PAGE_SIZE) << 10) | PAGE_V;
+    }
+
+    uint32_t vpn0 = (vaddr >> 12) & 0x3ff;
+    uint32_t *table0 = (uint32_t *) ((table1[vpn1] >> 10) * PAGE_SIZE);
+    table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
+}
 
 void kernel_main(void) {
     memset(__bss, 0, (size_t)(__bss_end - __bss));
